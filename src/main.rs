@@ -1,7 +1,15 @@
 // MIT License - 2021 Shiroko <hhx.xxm@gmail.com>
-use std::str::FromStr;
+use lazy_static::lazy_static;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Display, Formatter};
-use std::collections::VecDeque;
+use std::io::{prelude::*, BufReader};
+use std::str::FromStr;
+use std::sync::Mutex;
+
+lazy_static! {
+    static ref CUSTOM_FUNCTION_NAME: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    static ref CUSTOM_FUNCTION: Mutex<HashMap<String, CustomFunction>> = Mutex::new(HashMap::new());
+}
 
 #[derive(Debug)]
 pub enum Error {
@@ -15,7 +23,7 @@ impl Display for Error {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OperatorNotFound => write!(f, "Operator Not Found"),
-            Self::FunctionNotFound => write!(f, "Function Not Found")
+            Self::FunctionNotFound => write!(f, "Function Not Found"),
         }
     }
 }
@@ -35,6 +43,56 @@ pub struct Function {
     pub calc: fn(Vec<f64>) -> f64,
 }
 
+#[derive(Debug)]
+pub struct CustomFunction {
+    pub name: String,
+    pub param: usize,
+    params: Vec<String>,
+    tokens: Vec<Token>,
+}
+
+impl CustomFunction {
+    pub fn calc(&self, vars: Vec<f64>) -> f64 {
+        let mut args = HashMap::new();
+        let mut i = 0;
+        for p in &self.params {
+            args.insert(p.clone(), vars[i]);
+            i += 1;
+        }
+        calculate_rpn(&self.tokens, args)
+    }
+}
+
+fn parse_script_line(src: String) {
+    if !src.starts_with("func") {
+        return;
+    }
+
+    let parts: Vec<&str> = src.split(":").collect();
+    let parts1: Vec<&str> = parts[0].split(" ").collect();
+    let name = parts1[1].to_string();
+    let params_str = parts1[2].to_string();
+    let token_str = parts[1].trim().replace(" ", "");
+    let token_str = &token_str.as_str();
+
+    if CUSTOM_FUNCTION.lock().unwrap().contains_key(&name) {
+        return;
+    }
+    let params: Vec<String> = params_str
+        .trim()
+        .split(',')
+        .map(|s| s.to_string())
+        .collect();
+    let cf = CustomFunction {
+        name: name.clone(),
+        param: params.len(),
+        params,
+        tokens: convert_to_rpn(str_to_tokens(token_str)),
+    };
+    CUSTOM_FUNCTION.lock().unwrap().insert(name.clone(), cf);
+    CUSTOM_FUNCTION_NAME.lock().unwrap().push(name.clone());
+    println!("Custom Function `{}` has been added to list.", name);
+}
 
 fn factorial(num: u64) -> u64 {
     match num {
@@ -44,6 +102,7 @@ fn factorial(num: u64) -> u64 {
     }
 }
 
+#[rustfmt::skip]
 mod calc_defines {
     use crate::factorial;
 
@@ -115,8 +174,17 @@ mod calc_defines {
             false => 0.0
         }
     }
+
+    pub fn if_(v:Vec<f64>) -> f64 {
+        if v[0] == 1.0 {
+            v[1]
+        } else {
+            v[2]
+        }
+    }
 }
 
+#[rustfmt::skip]
 impl FromStr for Operator {
     type Err = Error;
 
@@ -143,6 +211,7 @@ impl FromStr for Operator {
     }
 }
 
+#[rustfmt::skip]
 impl FromStr for Function {
     type Err = Error;
 
@@ -151,6 +220,7 @@ impl FromStr for Function {
             "sin" => Ok(Self { name: "sin", param: 1, calc: calc_defines::sin }),
             "cos" => Ok(Self { name: "cos", param: 1, calc: calc_defines::cos }),
             "tan" => Ok(Self { name: "tan", param: 1, calc: calc_defines::tan }),
+            "if" => Ok(Self {name:"if", param: 3, calc: calc_defines::if_}),
             _ => Err(Self::Err::FunctionNotFound)
         }
     }
@@ -168,6 +238,11 @@ impl ToString for Function {
     }
 }
 
+impl ToString for CustomFunction {
+    fn to_string(&self) -> String {
+        self.name.to_string()
+    }
+}
 
 #[derive(Debug)]
 enum Token {
@@ -177,6 +252,8 @@ enum Token {
     Comma,
     LeftPar,
     RightPar,
+    Var(String),
+    CustomFunc(String), // store name
 }
 
 impl Token {
@@ -203,13 +280,18 @@ impl Display for Token {
             Self::LeftPar => write!(f, "("),
             Self::RightPar => write!(f, ")"),
             Self::Comma => write!(f, ","),
-            Self::Func(func) => write!(f, "{}", func.name)
+            Self::Func(func) => write!(f, "{}", func.name),
+            Self::Var(s) => write!(f, "{}", s),
+            Self::CustomFunc(s) => write!(f, "{}", s),
         }
     }
 }
 
-const OPERATOR_LIST: [&str; 14] = ["+", "-", "*", "/", "!", "%", "^", "==", ">", "<", ">=", "<=", "&&", "||"];
-const FUNCTION_LIST: [&str; 3] = ["sin", "cos", "tan"];
+const OPERATOR_LIST: [&str; 14] = [
+    "+", "-", "*", "/", "!", "%", "^", "==", ">", "<", ">=", "<=", "&&", "||",
+];
+const FUNCTION_LIST: [&str; 4] = ["sin", "cos", "tan", "if"];
+const VARIABLE_LIST: [&str; 5] = ["x", "y", "z", "w", "v"];
 
 fn split_expr(s: &str) -> Vec<&str> {
     let mut v = vec![];
@@ -221,13 +303,21 @@ fn split_expr(s: &str) -> Vec<&str> {
     for i in FUNCTION_LIST.iter() {
         compare_list.push(i);
     }
+    for i in VARIABLE_LIST.iter() {
+        compare_list.push(i);
+    }
+    let cfn = CUSTOM_FUNCTION_NAME.lock().unwrap();
+    for i in cfn.iter() {
+        compare_list.push(i);
+    }
     compare_list.push(",");
     compare_list.push("(");
     compare_list.push(")");
     loop {
         let fl = compare_list.iter();
-        let at: Vec<(Option<usize>, usize)> = fl.map(|x| { (s.find(x), x.len()) }).collect();
-        let at = at.iter()
+        let at: Vec<(Option<usize>, usize)> = fl.map(|x| (s.find(x), x.len())).collect();
+        let at = at
+            .iter()
             .filter(|x| x.0.is_some())
             .map(|x| (x.0.unwrap(), x.1))
             .min_by_key(|x| x.0);
@@ -249,6 +339,7 @@ fn split_expr(s: &str) -> Vec<&str> {
     v
 }
 
+// main shunting yard algo
 fn convert_to_rpn(infix: Vec<Token>) -> Vec<Token> {
     let mut infix = VecDeque::from(infix);
     // let mut number_quene: VecDeque<Token> = VecDeque::new();
@@ -261,68 +352,68 @@ fn convert_to_rpn(infix: Vec<Token>) -> Vec<Token> {
         }
         let token = token.unwrap();
         match token {
+            Token::Var(_) => output.push(token),
             Token::Num(_) => output.push(token),
-            Token::Op(current) => {
-                loop {
-                    if !operator_stack.is_empty()
-                        && operator_stack.last().unwrap().is_op()
-                        && {
-                        let op = if let Token::Op(op) = operator_stack.last().unwrap() {
-                            op
-                        } else {
-                            panic!("What! NOWAY");
-                        };
-                        op.priority >= current.priority
-                    } {
-                        output.push(operator_stack.pop().unwrap());
+            Token::Op(current) => loop {
+                if !operator_stack.is_empty() && operator_stack.last().unwrap().is_op() && {
+                    let op = if let Token::Op(op) = operator_stack.last().unwrap() {
+                        op
                     } else {
-                        operator_stack.push(Token::Op(current));
-                        break;
-                    }
+                        panic!("What! NOWAY");
+                    };
+                    op.priority >= current.priority
+                } {
+                    output.push(operator_stack.pop().unwrap());
+                } else {
+                    operator_stack.push(Token::Op(current));
+                    break;
                 }
-            }
+            },
             Token::Func(f) => {
                 operator_stack.push(Token::Func(f));
             }
-            Token::Comma => {
-                loop {
-                    if operator_stack.last().is_none() {
-                        panic!("NO LEGAL PARTNERS");
-                    }
-                    let current = operator_stack.pop().unwrap();
-                    match current {
-                        Token::Op(op) => {
-                            output.push(Token::Op(op));
-                        }
-                        Token::LeftPar => break,
-                        _ => panic!("Not legal.")
-                    }
-                }
+            Token::CustomFunc(f) => {
+                operator_stack.push(Token::CustomFunc(f));
             }
+            Token::Comma => loop {
+                if operator_stack.last().is_none() {
+                    panic!("NO LEGAL PARTNERS");
+                }
+                let current = operator_stack.pop().unwrap();
+                match current {
+                    Token::Op(op) => {
+                        output.push(Token::Op(op));
+                    }
+                    Token::LeftPar => {
+                        operator_stack.push(current);
+                        break;
+                    }
+                    _ => (),
+                }
+                panic!("Not legal at comma");
+            },
             Token::LeftPar => {
                 operator_stack.push(token);
             }
-            Token::RightPar => {
-                loop {
-                    if operator_stack.last().is_none() {
-                        panic!("NO LEGAL PARTNERS");
-                    }
-                    let current = operator_stack.pop().unwrap();
-                    match current {
-                        Token::Op(op) => {
-                            output.push(Token::Op(op));
-                        }
-                        Token::LeftPar => {
-                            if operator_stack.last().is_some()
-                                && operator_stack.last().unwrap().is_fn() {
-                                output.push(operator_stack.pop().unwrap());
-                            }
-                            break;
-                        }
-                        _ => panic!("Not legal."),
-                    }
+            Token::RightPar => loop {
+                if operator_stack.last().is_none() {
+                    panic!("NO LEGAL PARTNERS");
                 }
-            }
+                let current = operator_stack.pop().unwrap();
+                match current {
+                    Token::Op(op) => {
+                        output.push(Token::Op(op));
+                    }
+                    Token::LeftPar => {
+                        if operator_stack.last().is_some() && operator_stack.last().unwrap().is_fn()
+                        {
+                            output.push(operator_stack.pop().unwrap());
+                        }
+                        break;
+                    }
+                    _ => panic!("Not legal."),
+                }
+            },
         }
     }
     if !operator_stack.is_empty() {
@@ -348,8 +439,8 @@ fn print_token_list(token: &Vec<Token>) -> () {
     println!();
 }
 
-fn calculate_rpn(tokens: Vec<Token>) -> f64 {
-    let tokens = VecDeque::from(tokens);
+fn calculate_rpn(tokens: &Vec<Token>, vars: HashMap<String, f64>) -> f64 {
+    // let tokens = VecDeque::from(tokens);
     let mut numbers: Vec<f64> = Vec::new();
     for token in tokens {
         match token {
@@ -379,8 +470,27 @@ fn calculate_rpn(tokens: Vec<Token>) -> f64 {
                 let tmp = calc(param);
                 numbers.push(tmp);
             }
-            Token::Num(v) => numbers.push(v),
-            _ => panic!("RPN token cannot contains ,()")
+            Token::CustomFunc(name) => {
+                let cfs = CUSTOM_FUNCTION.lock().unwrap();
+                let f = if let Some(f) = cfs.get(name) {
+                    f
+                } else {
+                    panic!("Function {} not found.", name);
+                };
+                if numbers.len() < f.param {
+                    panic!("Wrong token. params count is not right.")
+                }
+                let mut param: Vec<f64> = Vec::new();
+                for _ in 0..f.param {
+                    param.push(numbers.pop().unwrap());
+                }
+                param.reverse();
+                let tmp = f.calc(param);
+                numbers.push(tmp);
+            }
+            Token::Num(v) => numbers.push(*v),
+            Token::Var(s) => numbers.push(vars.get(s).unwrap().to_owned()),
+            _ => panic!("RPN token cannot contains ,()"),
         }
     }
     if numbers.len() != 1 {
@@ -390,33 +500,65 @@ fn calculate_rpn(tokens: Vec<Token>) -> f64 {
     }
 }
 
-fn main() {
-    // Everything works!!!
-    // let input = "3 + 4 * 2 / ( 1 - 5 ) ^ (2 ^ 3)".to_string();
-    // let input = "1 + 2 * cos(5*8+5)".to_string();
-    let input = "(((1 + 3 == 2 * 2) < 2) + 2)!".to_string();
-    let input = input.replace(" ", "");
-    let result = split_expr(&input);
-
-    let mut infix_list: Vec<Token> = vec![];
+fn splited_expr_to_token(result: Vec<&str>) -> Vec<Token> {
+    let cfn = CUSTOM_FUNCTION_NAME.lock().unwrap();
+    let mut tokens: Vec<Token> = vec![];
     for element in result {
         if OPERATOR_LIST.iter().any(|c| *c == element) {
-            infix_list.push(Token::Op(Operator::from_str(element).unwrap()));
+            tokens.push(Token::Op(Operator::from_str(element).unwrap()));
         } else if FUNCTION_LIST.iter().any(|c| *c == element) {
-            infix_list.push(Token::Func(Function::from_str(element).unwrap()));
+            tokens.push(Token::Func(Function::from_str(element).unwrap()));
+        } else if VARIABLE_LIST.iter().any(|c| *c == element) {
+            tokens.push(Token::Var(element.to_string()));
+        } else if cfn.iter().any(|c| *c == element) {
+            tokens.push(Token::CustomFunc(element.to_string()));
         } else if element == "," {
-            infix_list.push(Token::Comma);
+            tokens.push(Token::Comma);
         } else if element == "(" {
-            infix_list.push(Token::LeftPar);
+            tokens.push(Token::LeftPar);
         } else if element == ")" {
-            infix_list.push(Token::RightPar);
+            tokens.push(Token::RightPar);
         } else {
-            infix_list.push(Token::Num(element.parse().unwrap()));
+            tokens.push(Token::Num(element.parse().unwrap()));
         }
     }
-    print_token_list(&infix_list);
-    let rpn = convert_to_rpn(infix_list);
-    print_token_list(&rpn);
-    let calc_result = calculate_rpn(rpn);
-    println!("Result = {}", calc_result);
+    drop(cfn);
+    tokens
+}
+
+fn str_to_tokens(s: &str) -> Vec<Token> {
+    splited_expr_to_token(split_expr(s))
+}
+
+fn main() {
+    //
+    let script_file = std::fs::File::open("script.txt").unwrap();
+    let reader = BufReader::new(script_file);
+    for line in reader.lines() {
+        parse_script_line(line.unwrap());
+    }
+
+    print!(">>> ");
+    std::io::stdout().flush().unwrap();
+    let stdin = std::io::stdin();
+    for input in stdin.lock().lines() {
+        let input = input.unwrap();
+
+        if input.starts_with("func") {
+            parse_script_line(input);
+        } else if input.eq_ignore_ascii_case("quit") {
+            break;
+        } else {
+            let infix_list = str_to_tokens(input.as_str());
+            print!("Infix Token: ");
+            print_token_list(&infix_list);
+            let rpn = convert_to_rpn(infix_list);
+            print!("RPN Token: ");
+            print_token_list(&rpn);
+            let calc_result = calculate_rpn(&rpn, HashMap::new());
+            println!("Result: {}", calc_result);
+        }
+        print!(">>> ");
+        std::io::stdout().flush().unwrap();
+    }
 }
