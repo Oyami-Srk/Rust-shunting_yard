@@ -438,7 +438,8 @@ fn convert_to_rpn(infix: Vec<Token>) -> Vec<Token> {
         }
     }
     if !operator_stack.is_empty() {
-        if !operator_stack.last().unwrap().is_op() || !operator_stack.last().unwrap().is_fn() {
+        if !(operator_stack.last().unwrap().is_op() || operator_stack.last().unwrap().is_fn()) {
+            println!("Stack: {:?}", operator_stack);
             panic!("NO LEGAL PARTNERS");
         }
         loop {
@@ -499,6 +500,7 @@ fn calculate_rpn(tokens: &Vec<Token>, vars: HashMap<String, f64>) -> f64 {
                     panic!("Function {} not found.", name);
                 };
                 if numbers.len() < f.param {
+                    println!("Number Stack: {:?}", numbers);
                     panic!("Wrong token. params count is not right.")
                 }
                 let mut param: Vec<f64> = Vec::new();
