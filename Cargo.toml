@@ -1,5 +1,5 @@
 [package]
-name = "rust-playground"
+name = "shunting_yard"
 version = "0.1.0"
 authors = ["Oyami-Srk <hhx.xxm@gmail.com>"]
 edition = "2021"

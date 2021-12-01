@@ -267,6 +267,7 @@ impl Token {
     pub fn is_fn(&self) -> bool {
         match self {
             Self::Func(_) => true,
+            Self::CustomFunc(_) => true,
             _ => false,
         }
     }
@@ -294,6 +295,7 @@ const FUNCTION_LIST: [&str; 4] = ["sin", "cos", "tan", "if"];
 const VARIABLE_LIST: [&str; 5] = ["x", "y", "z", "w", "v"];
 
 fn split_expr(s: &str) -> Vec<&str> {
+    // preprocess for negetive
     let mut v = vec![];
     let mut s = s;
     let mut compare_list: Vec<&str> = vec![];
@@ -335,6 +337,26 @@ fn split_expr(s: &str) -> Vec<&str> {
     }
     if v.last().unwrap().len() == 0 {
         v.pop();
+    }
+
+    // after process for negetive mark
+    for i in 0..v.len() {
+        if v[i] == "-" {
+            if i == 0 {
+                v.insert(0, "0");
+            } else {
+                let pre = v[i - 1];
+                if pre.parse::<f64>().is_ok() {
+                    continue;
+                }
+                if pre == ")" {
+                    continue;
+                }
+                if pre == "(" || pre == "," {
+                    v.insert(i, "0");
+                }
+            }
+        }
     }
     v
 }
@@ -390,7 +412,6 @@ fn convert_to_rpn(infix: Vec<Token>) -> Vec<Token> {
                     }
                     _ => (),
                 }
-                panic!("Not legal at comma");
             },
             Token::LeftPar => {
                 operator_stack.push(token);
@@ -417,7 +438,7 @@ fn convert_to_rpn(infix: Vec<Token>) -> Vec<Token> {
         }
     }
     if !operator_stack.is_empty() {
-        if !operator_stack.last().unwrap().is_op() {
+        if !operator_stack.last().unwrap().is_op() || !operator_stack.last().unwrap().is_fn() {
             panic!("NO LEGAL PARTNERS");
         }
         loop {
