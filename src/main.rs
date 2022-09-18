@@ -527,6 +527,7 @@ fn splited_expr_to_token(result: Vec<&str>) -> Vec<Token> {
     let cfn = CUSTOM_FUNCTION_NAME.lock().unwrap();
     let mut tokens: Vec<Token> = vec![];
     for element in result {
+        let element = element.trim();
         if OPERATOR_LIST.iter().any(|c| *c == element) {
             tokens.push(Token::Op(Operator::from_str(element).unwrap()));
         } else if FUNCTION_LIST.iter().any(|c| *c == element) {
@@ -541,7 +542,9 @@ fn splited_expr_to_token(result: Vec<&str>) -> Vec<Token> {
             tokens.push(Token::LeftPar);
         } else if element == ")" {
             tokens.push(Token::RightPar);
-        } else {
+        } else if element == " "{
+            continue;
+        }else{
             tokens.push(Token::Num(element.parse().unwrap()));
         }
     }
